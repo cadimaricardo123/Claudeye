@@ -1,0 +1,22 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Claudy}",
+            "name": "Debug Claudy",
+            "program": "${workspaceFolder:Claudy}/.build/debug/Claudy",
+            "preLaunchTask": "swift: Build Debug Claudy"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Claudy}",
+            "name": "Release Claudy",
+            "program": "${workspaceFolder:Claudy}/.build/release/Claudy",
+            "preLaunchTask": "swift: Build Release Claudy"
+        }
+    ]
+}

@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(swift -e 'import Foundation; print\\(AttributedString.MarkdownParsingOptions.InterpretedSyntax.full\\)')",
+      "Bash(swift -e 'import Foundation; _ = AttributedString.MarkdownParsingOptions.InterpretedSyntax.self')",
+      "Bash(swift build *)",
+      "Bash(bash build_app.sh)",
+      "Bash(open Claudy.app)",
+      "Bash(pkill -x Claudy)"
+    ]
+  }
+}
