@@ -1,19 +1,23 @@
 import SwiftUI
 
 struct SettingsView: View {
-    @AppStorage("anthropicApiKey")    var apiKey       = ""
-    @AppStorage("coinbaseApiKeyName") var cbKeyName    = ""
-    @AppStorage("coinbasePrivateKey") var cbPrivateKey = ""
-    @AppStorage("chromeDebugPort")    var port         = 9222
+    @AppStorage("anthropicApiKey")       var apiKey            = ""
+    @AppStorage("coinbaseApiKeyName")    var cbKeyName         = ""
+    @AppStorage("coinbasePrivateKey")    var cbPrivateKey      = ""
+    @AppStorage("cbPrimaryApiKeyName")   var cbPrimaryKeyName  = ""
+    @AppStorage("cbPrimaryPrivateKey")   var cbPrimaryPEM      = ""
+    @AppStorage("chromeDebugPort")       var port              = 9222
 
     @ObservedObject var viewModel: ChatViewModel
     @ObservedObject var coinbase: CoinbaseService
     @Environment(\.dismiss) var dismiss
 
-    @State private var showKey      = false
-    @State private var showPEM      = false
-    @State private var testStatus:   TestStatus = .idle
-    @State private var cbTestStatus: TestStatus = .idle
+    @State private var showKey          = false
+    @State private var showPEM          = false
+    @State private var showPrimaryPEM   = false
+    @State private var testStatus:         TestStatus = .idle
+    @State private var cbTestStatus:       TestStatus = .idle
+    @State private var cbPrimaryTestStatus: TestStatus = .idle
 
     enum TestStatus {
         case idle, testing, ok, failed(String)
@@ -187,7 +191,84 @@ struct SettingsView: View {
                          destination: URL(string: "https://portal.cdp.coinbase.com")!)
                     .font(.caption)
                 } header: {
-                    Text("Coinbase Advanced Trade (CDP)")
+                    Text("Coinbase Perpetual (Advanced Trade)")
+                }
+
+                // ── Primary wallet ──────────────────────────────────────
+                Section {
+                    // Key Name
+                    TextField("organizations/…/apiKeys/…", text: $cbPrimaryKeyName)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.caption, design: .monospaced))
+
+                    // Private Key PEM
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Private Key")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Spacer()
+                            Button { showPrimaryPEM.toggle() } label: {
+                                Label(showPrimaryPEM ? "Hide" : "Show",
+                                      systemImage: showPrimaryPEM ? "eye.slash" : "eye")
+                                    .font(.caption)
+                            }.buttonStyle(.plain)
+                        }
+
+                        if showPrimaryPEM {
+                            TextEditor(text: $cbPrimaryPEM)
+                                .font(.system(.caption, design: .monospaced))
+                                .frame(height: 90)
+                                .scrollContentBackground(.hidden)
+                                .padding(6)
+                                .background(Color(NSColor.textBackgroundColor))
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+                        } else {
+                            let preview = cbPrimaryPEM.isEmpty
+                                ? "-----BEGIN EC PRIVATE KEY-----"
+                                : "-----BEGIN … (key saved)"
+                            Text(preview)
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(cbPrimaryPEM.isEmpty ? .tertiary : .secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(6)
+                                .background(Color(NSColor.textBackgroundColor))
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+                        }
+                    }
+
+                    // Status + test
+                    HStack(spacing: 6) {
+                        switch cbPrimaryTestStatus {
+                        case .testing:
+                            ProgressView().scaleEffect(0.7).frame(width: 14, height: 14)
+                        default:
+                            Image(systemName: cbPrimaryTestStatus.icon)
+                                .foregroundStyle(cbPrimaryTestStatus.color).frame(width: 14)
+                        }
+                        Group {
+                            switch cbPrimaryTestStatus {
+                            case .idle:          Text("Paste key name + PEM private key above")
+                            case .testing:       Text("Testing…")
+                            case .ok:            Text("Connected ✓")
+                            case .failed(let m): Text(m)
+                            }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(cbPrimaryTestStatus == .ok ? .green :
+                                         cbPrimaryTestStatus == .idle ? .secondary : .red)
+                        Spacer()
+                        Button("Test") { Task { await testPrimaryCoinbase() } }
+                            .buttonStyle(.bordered).controlSize(.small)
+                            .disabled(cbPrimaryKeyName.isEmpty || cbPrimaryPEM.isEmpty || cbPrimaryTestStatus == .testing)
+                    }
+
+                    Link("Get keys at portal.cdp.coinbase.com",
+                         destination: URL(string: "https://portal.cdp.coinbase.com")!)
+                    .font(.caption)
+                } header: {
+                    Text("Coinbase Primary Wallet")
                 }
 
                 Section {
@@ -211,15 +292,17 @@ struct SettingsView: View {
                 Spacer()
                 Button("Save & Close") {
                     viewModel.updateApiKey(apiKey)
-                    coinbase.apiKeyName    = cbKeyName.trimmingCharacters(in: .whitespacesAndNewlines)
-                    coinbase.privateKeyPEM = cbPrivateKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                    coinbase.apiKeyName        = cbKeyName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    coinbase.privateKeyPEM     = cbPrivateKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                    coinbase.primaryApiKeyName  = cbPrimaryKeyName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    coinbase.primaryPrivateKeyPEM = cbPrimaryPEM.trimmingCharacters(in: .whitespacesAndNewlines)
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
             }
             .padding()
         }
-        .frame(width: 480, height: 560)
+        .frame(width: 480, height: 700)
     }
 
     // MARK: - Test
@@ -273,6 +356,18 @@ extension SettingsView {
             cbTestStatus = .ok
         } catch {
             cbTestStatus = .failed(error.localizedDescription)
+        }
+    }
+
+    func testPrimaryCoinbase() async {
+        cbPrimaryTestStatus = .testing
+        coinbase.primaryApiKeyName   = cbPrimaryKeyName.trimmingCharacters(in: .whitespacesAndNewlines)
+        coinbase.primaryPrivateKeyPEM = cbPrimaryPEM.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            _ = try await coinbase.signedPrimaryGET("/v2/accounts?limit=1")
+            cbPrimaryTestStatus = .ok
+        } catch {
+            cbPrimaryTestStatus = .failed(error.localizedDescription)
         }
     }
 }

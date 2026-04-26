@@ -15,13 +15,17 @@ class AppState: ObservableObject {
     let viewModel: ChatViewModel
 
     init() {
-        let anthropicKey  = UserDefaults.standard.string(forKey: "anthropicApiKey")  ?? ""
-        let cbKeyName    = UserDefaults.standard.string(forKey: "coinbaseApiKeyName")  ?? ""
-        let cbPrivateKey = UserDefaults.standard.string(forKey: "coinbasePrivateKey") ?? ""
+        let anthropicKey     = UserDefaults.standard.string(forKey: "anthropicApiKey")    ?? ""
+        let cbKeyName        = UserDefaults.standard.string(forKey: "coinbaseApiKeyName") ?? ""
+        let cbPrivateKey     = UserDefaults.standard.string(forKey: "coinbasePrivateKey") ?? ""
+        let cbPrimaryKeyName = UserDefaults.standard.string(forKey: "cbPrimaryApiKeyName") ?? ""
+        let cbPrimaryPEM     = UserDefaults.standard.string(forKey: "cbPrimaryPrivateKey") ?? ""
 
         viewModel = ChatViewModel(bridge: bridge, coinbase: coinbase, apiKey: anthropicKey)
-        coinbase.apiKeyName   = cbKeyName
-        coinbase.privateKeyPEM = cbPrivateKey
+        coinbase.apiKeyName          = cbKeyName
+        coinbase.privateKeyPEM       = cbPrivateKey
+        coinbase.primaryApiKeyName   = cbPrimaryKeyName
+        coinbase.primaryPrivateKeyPEM = cbPrimaryPEM
     }
 }
 

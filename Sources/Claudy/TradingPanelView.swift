@@ -44,6 +44,12 @@ struct TradingPanelView: View {
                     // Coinbase section
                     coinbaseSectionView
                         .padding(14)
+
+                    Divider()
+
+                    // Coinbase Primary wallet section
+                    coinbasePrimarySectionView
+                        .padding(14)
                 }
             }
         }
@@ -111,6 +117,68 @@ struct TradingPanelView: View {
     private func fmtCB(_ v: String) -> String {
         guard let d = Double(v), d != 0 else { return v }
         return d >= 1 ? String(format: "%.4f", d) : String(format: "%.8f", d)
+    }
+
+    // MARK: - Coinbase Primary wallet
+
+    private var coinbasePrimarySectionView: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "wallet.bifold.fill")
+                    .foregroundStyle(.blue)
+                Text("Primary Wallet")
+                    .font(.headline)
+                Spacer()
+                Circle()
+                    .fill(coinbase.isPrimaryConnected ? Color.green : Color.secondary.opacity(0.5))
+                    .frame(width: 8, height: 8)
+            }
+
+            Text(coinbase.primaryStatusMessage)
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !coinbase.isPrimaryConnected {
+                Button {
+                    Task { await coinbase.connectPrimary() }
+                } label: {
+                    Label("Connect", systemImage: "link").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent).tint(.blue).controlSize(.regular)
+
+                Text("Add primary wallet API key in Settings (⌘,) first.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            } else {
+                Button {
+                    Task { await coinbase.refreshPrimary() }
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered).controlSize(.small)
+
+                if !coinbase.primaryAccounts.isEmpty {
+                    Divider()
+                    let nonZero = coinbase.primaryAccounts
+                        .filter { $0.balanceDouble > 0 }
+                        .sorted { $0.balanceDouble > $1.balanceDouble }
+                        .prefix(12)
+                    ForEach(nonZero) { acc in
+                        PanelRow(
+                            label: acc.currency.code,
+                            value: fmtCB(acc.balance.amount),
+                            valueColor: .primary
+                        )
+                    }
+                }
+
+                Button {
+                    coinbase.disconnectPrimary()
+                } label: {
+                    Label("Disconnect", systemImage: "link.badge.minus").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered).controlSize(.small).foregroundStyle(.red)
+            }
+        }
     }
 
     // MARK: - Disconnected
