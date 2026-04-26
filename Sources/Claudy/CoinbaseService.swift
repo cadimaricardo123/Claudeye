@@ -39,7 +39,7 @@ struct CBBalance: Decodable {
     let currency: String
 }
 
-// MARK: - Models (Primary / v2)
+// MARK: - Models (Primary wallet / v2 API)
 
 struct CBPrimaryAccountsResponse: Decodable {
     let data: [CBPrimaryAccount]
@@ -50,14 +50,27 @@ struct CBPrimaryAccount: Decodable, Identifiable {
     let name: String
     let currency: CBPrimaryCurrency
     let balance: CBPrimaryBalance
+    let nativeBalance: CBPrimaryBalance?   // USD equivalent
 
-    var balanceDouble: Double { Double(balance.amount) ?? 0 }
+    var balanceDouble: Double       { Double(balance.amount) ?? 0 }
+    var nativeBalanceDouble: Double { Double(nativeBalance?.amount ?? "0") ?? 0 }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, currency, balance
+        case nativeBalance = "native_balance"
+    }
 }
 
 struct CBPrimaryCurrency: Decodable { let code: String }
 struct CBPrimaryBalance:  Decodable { let amount: String; let currency: String }
 
-// MARK: - Service
+/// One primary-wallet asset: quantity + live USD value
+struct CBPrimaryAsset: Identifiable {
+    let id:         String
+    let code:       String
+    let quantity:   Double
+    var currentUSD: Double
+}
 
 @MainActor
 class CoinbaseService: ObservableObject {
@@ -66,20 +79,19 @@ class CoinbaseService: ObservableObject {
     @Published var isConnected = false
     @Published var statusMessage = "Not connected"
 
-    // Primary wallet (v3 brokerage with separate key)
-    @Published var primaryAccounts: [CBPrimaryAccount] = []
+    // Primary wallet (v2 API — same CDP JWT auth, separate key)
+    @Published var primaryAssets: [CBPrimaryAsset] = []
+    @Published var primaryTotalUSD: Double = 0
     @Published var isPrimaryConnected = false
     @Published var primaryStatusMessage = "Not connected"
 
     // Perpetual CDP key
-    var apiKeyName: String = ""
+    var apiKeyName:    String = ""
     var privateKeyPEM: String = ""
 
     // Primary wallet CDP key (same format, different values)
-    var primaryApiKeyName: String = ""
+    var primaryApiKeyName:    String = ""
     var primaryPrivateKeyPEM: String = ""
-
-    // MARK: - Perpetual wallet
 
     func connect() async {
         statusMessage = "Connecting…"
@@ -99,6 +111,11 @@ class CoinbaseService: ObservableObject {
         statusMessage = "Not connected"
     }
 
+    func refresh() async {
+        do { try await fetchAccounts() } catch {}
+        if isPrimaryConnected { await refreshPrimary() }
+    }
+
     // MARK: - Primary wallet
 
     func connectPrimary() async {
@@ -106,7 +123,7 @@ class CoinbaseService: ObservableObject {
         do {
             try await fetchPrimaryAccounts()
             isPrimaryConnected = true
-            primaryStatusMessage = "Connected — \(primaryAccounts.count) account\(primaryAccounts.count == 1 ? "" : "s")"
+            primaryStatusMessage = "Connected — \(primaryAssets.count) asset\(primaryAssets.count == 1 ? "" : "s")"
         } catch {
             isPrimaryConnected = false
             primaryStatusMessage = error.localizedDescription
@@ -114,18 +131,14 @@ class CoinbaseService: ObservableObject {
     }
 
     func disconnectPrimary() {
-        primaryAccounts = []
+        primaryAssets = []
+        primaryTotalUSD = 0
         isPrimaryConnected = false
         primaryStatusMessage = "Not connected"
     }
 
     func refreshPrimary() async {
         do { try await fetchPrimaryAccounts() } catch {}
-    }
-
-    func refresh() async {
-        do { try await fetchAccounts() } catch {}
-        if isPrimaryConnected { do { try await fetchPrimaryAccounts() } catch {} }
     }
 
     func portfolioSummary() -> String {
@@ -139,20 +152,18 @@ class CoinbaseService: ObservableObject {
                 lines.append(line)
             }
         } else {
-            lines.append("Coinbase Perpetual: not connected. Add perpetual CDP key in Settings (⌘,).")
+            lines.append("Coinbase Perpetual: not connected.")
         }
 
         lines.append("")
 
-        if isPrimaryConnected, !primaryAccounts.isEmpty {
-            lines.append("Coinbase Primary portfolio:")
-            let nonZero = primaryAccounts.filter { $0.balanceDouble > 0 }
-                                         .sorted { $0.balanceDouble > $1.balanceDouble }
-            for acc in nonZero {
-                lines.append("  \(acc.currency.code): \(fmt(acc.balance.amount))")
+        if isPrimaryConnected, !primaryAssets.isEmpty {
+            lines.append("Coinbase Primary Wallet (total: \(fmtUSD(primaryTotalUSD))):")
+            for asset in primaryAssets.sorted(by: { $0.currentUSD > $1.currentUSD }) {
+                lines.append("  \(asset.code): \(fmtQty(asset.quantity)) = \(fmtUSD(asset.currentUSD))")
             }
         } else {
-            lines.append("Coinbase Primary: not connected. Add primary CDP key in Settings (⌘,).")
+            lines.append("Coinbase Primary: not connected.")
         }
 
         return lines.joined(separator: "\n")
@@ -180,6 +191,8 @@ class CoinbaseService: ObservableObject {
         guard !primaryApiKeyName.isEmpty, !primaryPrivateKeyPEM.isEmpty else {
             throw CBError.noPrimaryCredentials
         }
+        let fiatCodes: Set<String> = ["USD","EUR","GBP","AUD","CAD","CHF","JPY","SGD","HKD","BRL","MXN","KRW","USDC","USDT","DAI"]
+
         var all: [CBPrimaryAccount] = []
         var nextPath: String? = "/v2/accounts?limit=100"
 
@@ -187,27 +200,63 @@ class CoinbaseService: ObservableObject {
             let (data, _) = try await signedPrimaryGET(path)
             let decoded = try JSONDecoder().decode(CBPrimaryAccountsResponse.self, from: data)
             all.append(contentsOf: decoded.data)
-
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let pagination = json["pagination"] as? [String: Any],
-               let next = pagination["next_uri"] as? String, !next.isEmpty {
+               let pag  = json["pagination"] as? [String: Any],
+               let next = pag["next_uri"] as? String, !next.isEmpty {
                 nextPath = next
-            } else {
-                nextPath = nil
-            }
+            } else { nextPath = nil }
         }
 
-        primaryAccounts = all.filter { $0.balanceDouble > 0 }
+        // Only crypto accounts with a non-zero balance
+        let cryptoAccounts = all.filter {
+            $0.balanceDouble > 0 && !fiatCodes.contains($0.currency.code.uppercased())
+        }
+
+        // Fetch live USD spot prices in parallel (public endpoint — no auth needed)
+        let uniqueCodes = Array(Set(cryptoAccounts.map { $0.currency.code }))
+        let spotPrices: [String: Double] = await withTaskGroup(of: (String, Double).self) { group in
+            for code in uniqueCodes {
+                group.addTask { (code, await self.fetchSpotUSD(currency: code)) }
+            }
+            var result: [String: Double] = [:]
+            for await (code, price) in group { result[code] = price }
+            return result
+        }
+
+        primaryAssets = cryptoAccounts.map { acc in
+            let spot = spotPrices[acc.currency.code] ?? 0
+            let currentUSD = spot > 0 ? acc.balanceDouble * spot : acc.nativeBalanceDouble
+            return CBPrimaryAsset(
+                id:         acc.id,
+                code:       acc.currency.code,
+                quantity:   acc.balanceDouble,
+                currentUSD: currentUSD
+            )
+        }.sorted { $0.currentUSD > $1.currentUSD }
+
+        primaryTotalUSD = primaryAssets.reduce(0) { $0 + $1.currentUSD }
     }
 
-    // Perpetual wallet — signed with perpetual CDP key
+    /// Fetches the USD spot price from Coinbase's public price API (no auth needed).
+    private func fetchSpotUSD(currency: String) async -> Double {
+        guard let url = URL(string: "https://api.coinbase.com/v2/prices/\(currency)-USD/spot") else { return 0 }
+        var req = URLRequest(url: url)
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let json     = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let dataDict = json["data"] as? [String: Any],
+              let amtStr   = dataDict["amount"] as? String,
+              let amount   = Double(amtStr) else { return 0 }
+        return amount
+    }
+
     func signedGET(_ path: String) async throws -> (Data, HTTPURLResponse) {
         guard !apiKeyName.isEmpty, !privateKeyPEM.isEmpty else { throw CBError.noCredentials }
         let jwt = try makeJWT(keyName: apiKeyName, pem: privateKeyPEM, method: "GET", path: path)
         return try await performGET(path: path, jwt: jwt)
     }
 
-    // Primary wallet — signed with primary CDP key
     func signedPrimaryGET(_ path: String) async throws -> (Data, HTTPURLResponse) {
         guard !primaryApiKeyName.isEmpty, !primaryPrivateKeyPEM.isEmpty else { throw CBError.noPrimaryCredentials }
         let jwt = try makeJWT(keyName: primaryApiKeyName, pem: primaryPrivateKeyPEM, method: "GET", path: path)
@@ -222,7 +271,6 @@ class CoinbaseService: ObservableObject {
 
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw CBError.badResponse }
-
         if http.statusCode != 200 {
             let msg = apiErrorMessage(data) ?? "HTTP \(http.statusCode)"
             throw CBError.apiError(msg)
@@ -295,10 +343,12 @@ class CoinbaseService: ObservableObject {
     private func makeJWT(keyName: String, pem: String, method: String, path: String) throws -> String {
         let privKey = try loadPrivateKey(from: pem)
 
-        let now       = Int(Date().timeIntervalSince1970)
+        let now  = Int(Date().timeIntervalSince1970)
+        // URI claim: "METHOD host/path" — strip query string, no scheme
         let cleanPath = path.components(separatedBy: "?")[0]
-        let uri       = "\(method) api.coinbase.com\(cleanPath)"
+        let uri  = "\(method) api.coinbase.com\(cleanPath)"
 
+        // Header — nonce guards against replay
         let header: [String: Any] = [
             "alg":   "ES256",
             "kid":   keyName,
@@ -339,6 +389,15 @@ class CoinbaseService: ObservableObject {
         return d >= 1 ? String(format: "%.4f", d) : String(format: "%.8f", d)
     }
 
+    func fmtUSD(_ v: Double) -> String {
+        let sign = v < 0 ? "-" : ""
+        return "\(sign)$\(String(format: "%.2f", abs(v)))"
+    }
+
+    func fmtQty(_ v: Double) -> String {
+        return v >= 1 ? String(format: "%.4f", v) : String(format: "%.8f", v)
+    }
+
     // MARK: - Errors
 
     enum CBError: LocalizedError {
@@ -349,7 +408,7 @@ class CoinbaseService: ObservableObject {
         var errorDescription: String? {
             switch self {
             case .noCredentials:         return "Coinbase perpetual credentials not set — add them in Settings (⌘,)"
-            case .noPrimaryCredentials:  return "Coinbase primary wallet credentials not set — add them in Settings (⌘,)"
+            case .noPrimaryCredentials:  return "Primary wallet credentials not set — add them in Settings (⌘,)"
             case .badResponse:           return "Invalid response from Coinbase"
             case .apiError(let m):       return m
             case .invalidKey(let m):     return "Invalid key: \(m)"

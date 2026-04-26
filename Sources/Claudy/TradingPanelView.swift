@@ -47,13 +47,13 @@ struct TradingPanelView: View {
 
                     Divider()
 
-                    // Coinbase Primary wallet section
-                    coinbasePrimarySectionView
+                    // Primary wallet section
+                    coinbasePrimarySection
                         .padding(14)
                 }
             }
         }
-        .frame(width: 230)
+        .frame(width: 260)
     }
 
     // MARK: - Coinbase
@@ -119,9 +119,9 @@ struct TradingPanelView: View {
         return d >= 1 ? String(format: "%.4f", d) : String(format: "%.8f", d)
     }
 
-    // MARK: - Coinbase Primary wallet
+    // MARK: - Coinbase Primary Wallet
 
-    private var coinbasePrimarySectionView: some View {
+    private var coinbasePrimarySection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: "wallet.bifold.fill")
@@ -156,18 +156,24 @@ struct TradingPanelView: View {
                 }
                 .buttonStyle(.bordered).controlSize(.small)
 
-                if !coinbase.primaryAccounts.isEmpty {
+                if !coinbase.primaryAssets.isEmpty {
                     Divider()
-                    let nonZero = coinbase.primaryAccounts
-                        .filter { $0.balanceDouble > 0 }
-                        .sorted { $0.balanceDouble > $1.balanceDouble }
-                        .prefix(12)
-                    ForEach(nonZero) { acc in
-                        PanelRow(
-                            label: acc.currency.code,
-                            value: fmtCB(acc.balance.amount),
-                            valueColor: .primary
-                        )
+
+                    // Total
+                    HStack {
+                        Text("Total")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Text(coinbase.fmtUSD(coinbase.primaryTotalUSD))
+                            .font(.caption).fontWeight(.semibold).foregroundStyle(.blue)
+                    }
+
+                    Divider()
+
+                    // Per-asset rows
+                    ForEach(coinbase.primaryAssets) { asset in
+                        PrimaryAssetRow(asset: asset, coinbase: coinbase)
+                        if asset.id != coinbase.primaryAssets.last?.id { Divider().opacity(0.4) }
                     }
                 }
 
@@ -339,5 +345,26 @@ struct PanelRow: View {
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+}
+
+/// Shows one primary wallet asset: symbol, quantity, current USD value
+struct PrimaryAssetRow: View {
+    let asset: CBPrimaryAsset
+    let coinbase: CoinbaseService
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(asset.code)
+                    .font(.caption).fontWeight(.semibold)
+                Text(coinbase.fmtQty(asset.quantity))
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(coinbase.fmtUSD(asset.currentUSD))
+                .font(.caption).fontWeight(.medium)
+        }
+        .padding(.vertical, 2)
     }
 }
